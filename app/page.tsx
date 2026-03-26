@@ -255,30 +255,18 @@ export default function Page() {
     }
   };
 
-  const handleDownloadQRIS = async (e: React.MouseEvent<HTMLButtonElement>) => {
+  const handleDownloadQRIS = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
     const imageUrl =
       'https://i.ibb.co.com/JjfVVDsG/Whats-App-Interactive-2026-02-17-at-16-52-19.jpg';
-    try {
-      const response = await fetch(imageUrl);
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'QRIS_Donasi_Developer.jpg';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      const link = document.createElement('a');
-      link.href = imageUrl;
-      link.download = 'QRIS_Donasi_Developer.jpg';
-      link.target = '_blank';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    }
+    const link = document.createElement('a');
+    link.href = imageUrl;
+    link.download = 'QRIS_Donasi_Developer.jpg';
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
     setShowDonation(false);
   };
 
