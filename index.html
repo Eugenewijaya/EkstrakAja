@@ -1,0 +1,920 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { 
+  Upload, FileText, Table, Download, Copy, Check, AlertCircle, Loader2, 
+  Image as ImageIcon, ChevronRight, Settings2, Palette, Type, LayoutTemplate, 
+  FileSpreadsheet, ShieldCheck, X, Sparkles, FileUp, Instagram, Heart
+} from 'lucide-react';
+
+// Kunci API disuntikkan oleh environment
+const apiKey = "";
+
+export default function App() {
+  const [file, setFile] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const [mode, setMode] = useState('text'); // 'text', 'table', or 'sheet'
+  const [loading, setLoading] = useState(false);
+  const [showTool, setShowTool] = useState(false); // State untuk menampilkan tool
+  
+  // Hasil Ekstraksi Gambar
+  const [resultText, setResultText] = useState('');
+  const [resultTable, setResultTable] = useState(null);
+  
+  // Konfigurasi & Hasil untuk Pembuat Sheet Pintar
+  const [sheetConfig, setSheetConfig] = useState({
+    mode: 'template', // 'template' atau 'custom'
+    template: 'Inventaris Barang Masuk & Keluar',
+    customData: '',
+    customInstruction: '',
+    formulas: { sum: true, average: false, minmax: false },
+    headerColor: '#4F46E5', // Indigo default
+    fontStyle: 'sans-serif',
+    hasBorders: true,
+    pageLayout: 'single' // 'single' atau 'multi'
+  });
+  const [resultSheet, setResultSheet] = useState(null);
+
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+  
+  // Donasi Pop Up State
+  const [showDonation, setShowDonation] = useState(false);
+  const lastPopupTime = useRef(Date.now());
+
+  const fileInputRef = useRef(null);
+  const dataInputRef = useRef(null);
+  const toolSectionRef = useRef(null);
+
+  // --- LOGIC POP UP DONASI ACAK ---
+  useEffect(() => {
+    const handleGlobalClick = () => {
+      // Jangan munculkan pop-up acak jika tool belum dibuka untuk menghindari spam di awal
+      if (!showTool) return;
+
+      const now = Date.now();
+      // Munculkan popup jika belum pernah muncul dalam 2 menit terakhir (120000 ms)
+      if (now - lastPopupTime.current > 120000) {
+        if (Math.random() < 0.10) { 
+          setShowDonation(true);
+          lastPopupTime.current = now;
+        }
+      }
+    };
+
+    document.addEventListener('click', handleGlobalClick);
+    return () => document.removeEventListener('click', handleGlobalClick);
+  }, [showTool]);
+
+  // Scroll otomatis ke tool saat tombol ditekan
+  const scrollToTool = () => {
+    setShowTool(true);
+    setTimeout(() => {
+      toolSectionRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+  };
+
+  // --- FUNGSI UPLOAD GAMBAR ---
+  const handleFileChange = (e) => {
+    const selectedFile = e.target.files[0];
+    if (selectedFile) {
+      if (!selectedFile.type.startsWith('image/')) {
+        setError('Mohon unggah file gambar (JPG, PNG, dll).');
+        return;
+      }
+      setFile(selectedFile);
+      setPreviewUrl(URL.createObjectURL(selectedFile));
+      setResultText('');
+      setResultTable(null);
+      setError('');
+    }
+  };
+
+  const handleDragOver = (e) => e.preventDefault();
+  const handleDrop = (e) => {
+    e.preventDefault();
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      const droppedFile = e.dataTransfer.files[0];
+      if (droppedFile.type.startsWith('image/')) {
+        setFile(droppedFile);
+        setPreviewUrl(URL.createObjectURL(droppedFile));
+        setResultText('');
+        setResultTable(null);
+        setError('');
+      } else {
+        setError('Mohon unggah file gambar yang valid.');
+      }
+    }
+  };
+
+  const getBase64 = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        let encoded = reader.result.toString().replace(/^data:(.*,)?/, '');
+        if ((encoded.length % 4) > 0) encoded += '='.repeat(4 - (encoded.length % 4));
+        resolve(encoded);
+      };
+      reader.onerror = error => reject(error);
+    });
+  };
+
+  // --- FUNGSI EKSTRAK DARI GAMBAR ---
+  const handleExtract = async () => {
+    if (!file) return;
+    setLoading(true);
+    setError('');
+    setResultText('');
+    setResultTable(null);
+
+    try {
+      const base64Data = await getBase64(file);
+      let prompt = mode === 'text' 
+        ? "Ekstrak semua teks yang ada di dalam gambar ini. Berikan HANYA teks yang diekstrak tanpa tambahan komentar, penjelasan, atau basa-basi apapun. Pertahankan format paragraf aslinya semaksimal mungkin."
+        : "Ekstrak tabel dari gambar ini. Keluarkan HANYA array 2D dalam format JSON yang valid, di mana array pertama adalah baris header, dan array berikutnya adalah baris data. Contoh: [[\"Header 1\"], [\"Data 1\"]]. Jangan tambahkan teks lain. Pastikan ini adalah JSON array yang bisa langsung di-parse.";
+
+      const payload = {
+        contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: file.type, data: base64Data } }] }]
+      };
+
+      const data = await fetchWithRetry(payload);
+      const extractedText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!extractedText) throw new Error("Gagal mengekstrak data. Hasil kosong.");
+
+      if (mode === 'text') {
+        setResultText(extractedText);
+        downloadTxt(extractedText);
+      } else {
+        try {
+          let cleanJson = extractedText.replace(/```json/g, '').replace(/```/g, '').trim();
+          const parsedTable = JSON.parse(cleanJson);
+          if (Array.isArray(parsedTable) && parsedTable.length > 0) setResultTable(parsedTable);
+          else throw new Error("Format tabel tidak dikenali.");
+        } catch (parseError) {
+          setError("Gagal memformat tabel visual. Berikut adalah hasil teks mentahnya.");
+          setResultText(extractedText); 
+        }
+      }
+    } catch (err) {
+      setError('Terjadi kesalahan saat memproses gambar. Pastikan API key valid atau coba lagi nanti.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- FUNGSI UPLOAD DATA MENTAH ---
+  const handleDataFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        setSheetConfig({...sheetConfig, customData: evt.target.result});
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  // --- FUNGSI PEMBUAT SHEET PINTAR (GENERATE) ---
+  const handleGenerateSheet = async () => {
+    setLoading(true);
+    setError('');
+    setResultSheet(null);
+
+    try {
+      let prompt = "";
+
+      if (sheetConfig.mode === 'template') {
+        const activeFormulas = [];
+        if (sheetConfig.formulas.sum) activeFormulas.push("Penjumlahan (SUM)");
+        if (sheetConfig.formulas.average) activeFormulas.push("Rata-rata (AVERAGE)");
+        if (sheetConfig.formulas.minmax) activeFormulas.push("Nilai Max/Min (MAX/MIN)");
+
+        prompt = `Anda adalah ahli pembuat template Spreadsheet/Excel. Buatkan data struktur spreadsheet yang realistis dan lengkap untuk keperluan: "${sheetConfig.template}".
+        Instruksi Konfigurasi:
+        1. Rumus yang diaktifkan: ${activeFormulas.length > 0 ? activeFormulas.join(', ') : 'Tidak ada'}. JIKA ADA rumus yang aktif, masukkan sintaks Excel yang valid (misal: =SUM(E2:E10), =D2*C2) langsung ke dalam sel data yang sesuai.
+        2. Layout Halaman: ${sheetConfig.pageLayout === 'multi' ? 'Pisahkan data menjadi beberapa sheet logis (misalnya per kategori).' : 'Jadikan satu sheet utama yang merangkum semua data.'}
+        3. Berikan minimal 5 baris data percontohan (dummy data).
+        
+        Output HARUS berupa objek JSON murni:
+        { "sheets": [ { "name": "Nama Sheet", "data": [ ["Header1"], ["Data 1", "=B2*10"] ] } ] }`;
+
+      } else {
+        prompt = `Anda adalah ahli pengolahan data Excel. Saya memiliki data mentah berikut:
+        ${sheetConfig.customData || '(Data kosong, buatkan format berdasarkan instruksi saja)'}
+        
+        Instruksi Khusus: ${sheetConfig.customInstruction}
+        
+        Tugas Anda:
+        1. Olah data mentah tersebut menjadi struktur tabel sesuai instruksi.
+        2. Jika instruksi meminta pivot table atau rekapitulasi, buatkan format tabel agregatnya di sheet yang relevan.
+        3. Jika instruksi meminta pewarnaan baris/cell tertentu, berikan warna tersebut dalam format objek cell JSON { "v": "nilai", "bg": "#kodehexwarna" }. Jika tidak butuh warna khusus, bisa langsung pakai format string/angka biasa.
+        
+        Output HARUS berupa objek JSON murni TANPA markdown \`\`\`json, dengan format:
+        {
+          "sheets": [
+            {
+              "name": "Nama Sheet",
+              "data": [
+                ["Header1", "Header2", "Header 3"],
+                ["Data Biasa", 50, { "v": "Stok Menipis", "bg": "#ffcccc" }]
+              ]
+            }
+          ]
+        }`;
+      }
+
+      const payload = { contents: [{ role: "user", parts: [{ text: prompt }] }] };
+      const responseData = await fetchWithRetry(payload);
+      let jsonText = responseData?.candidates?.[0]?.content?.parts?.[0]?.text;
+      
+      if (!jsonText) throw new Error("Gagal membuat sheet.");
+      
+      jsonText = jsonText.replace(/```json/g, '').replace(/```/g, '').trim();
+      const parsedSheet = JSON.parse(jsonText);
+      
+      if (parsedSheet && parsedSheet.sheets) {
+        setResultSheet(parsedSheet);
+      } else {
+        throw new Error("Format output AI tidak sesuai yang diharapkan.");
+      }
+    } catch (err) {
+      console.error(err);
+      setError('Gagal membuat spreadsheet. Data JSON AI tidak valid atau instruksi terlalu rumit. Coba sederhanakan instruksi Anda.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchWithRetry = async (payload) => {
+    let retries = 3;
+    let delay = 1000;
+    while (retries > 0) {
+      try {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        return await response.json();
+      } catch (err) {
+        retries--;
+        if (retries === 0) throw err;
+        await new Promise(res => setTimeout(res, delay));
+        delay *= 2;
+      }
+    }
+  };
+
+  // --- FUNGSI DOWNLOAD & COPY ---
+  const downloadTxt = (text) => {
+    const element = document.createElement("a");
+    const blob = new Blob([text], {type: 'text/plain'});
+    element.href = URL.createObjectURL(blob);
+    element.download = "Hasil_EkstrakAja.txt";
+    document.body.appendChild(element);
+    element.click();
+    document.body.removeChild(element);
+  };
+
+  const downloadCsv = () => {
+    if (!resultTable) return;
+    const csvContent = resultTable.map(row => 
+      row.map(cell => {
+        let cellStr = cell ? cell.toString() : '';
+        if (cellStr.includes(',') || cellStr.includes('"') || cellStr.includes('\n')) {
+          cellStr = `"${cellStr.replace(/"/g, '""')}"`;
+        }
+        return cellStr;
+      }).join(',')
+    ).join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "Tabel_EkstrakAja.csv";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const downloadStyledExcel = () => {
+    if (!resultSheet) return;
+
+    let html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+    <head>
+    <meta charset="utf-8" />
+    <style>
+      table { font-family: ${sheetConfig.fontStyle}; border-collapse: collapse; margin-bottom: 2em; }
+      th { background-color: ${sheetConfig.headerColor}; color: #ffffff; ${sheetConfig.hasBorders ? 'border: 1pt solid #000000;' : ''} padding: 8px; font-weight: bold; text-align: left; }
+      td { ${sheetConfig.hasBorders ? 'border: 1pt solid #000000;' : ''} padding: 8px; }
+    </style>
+    </head>
+    <body>`;
+
+    resultSheet.sheets.forEach(sheet => {
+      html += `<h2>${sheet.name}</h2>`;
+      html += `<table>`;
+      sheet.data.forEach((row, rowIndex) => {
+        html += `<tr>`;
+        row.forEach(cell => {
+          const isHeader = rowIndex === 0;
+          const tag = isHeader ? 'th' : 'td';
+          
+          let cellValue = '';
+          let cellStyle = '';
+
+          if (cell !== null && typeof cell === 'object' && cell.v !== undefined) {
+            cellValue = cell.v.toString();
+            if (cell.bg && !isHeader) {
+              cellStyle = `style="background-color: ${cell.bg};"`;
+            }
+          } else {
+            cellValue = cell === null ? '' : cell.toString();
+          }
+
+          html += `<${tag} ${cellStyle}>${cellValue}</${tag}>`;
+        });
+        html += `</tr>`;
+      });
+      html += `</table><br><br>`;
+    });
+
+    html += `</body></html>`;
+
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel' });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    const fileName = sheetConfig.mode === 'template' ? sheetConfig.template : 'Data_Kustom';
+    link.download = `EkstrakAja_${fileName.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.xls`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const copyToClipboard = () => {
+    let textToCopy = '';
+    if (mode === 'text' && resultText) textToCopy = resultText;
+    else if (mode === 'table' && resultTable) textToCopy = resultTable.map(row => row.join('\t')).join('\n');
+    
+    if (textToCopy) {
+      const textArea = document.createElement("textarea");
+      textArea.value = textToCopy;
+      document.body.appendChild(textArea);
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch (err) { console.error('Gagal menyalin', err); }
+      document.body.removeChild(textArea);
+    }
+  };
+
+  const handleDownloadQRIS = async (e) => {
+    e.stopPropagation();
+    const imageUrl = "https://i.ibb.co.com/JjfVVDsG/Whats-App-Interactive-2026-02-17-at-16-52-19.jpg";
+    try {
+      const response = await fetch(imageUrl);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'QRIS_Donasi_Developer.jpg';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      const link = document.createElement('a');
+      link.href = imageUrl;
+      link.download = 'QRIS_Donasi_Developer.jpg';
+      link.target = "_blank";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+    setShowDonation(false);
+  };
+
+  // --- RENDERERS ---
+  const renderExtractUI = () => (
+    <div className="flex flex-col md:flex-row gap-8 animate-in fade-in zoom-in duration-500">
+      {/* Upload Area */}
+      <div className="w-full md:w-1/2 flex flex-col">
+        <div 
+          className={`flex-1 border-2 border-dashed rounded-xl flex flex-col items-center justify-center p-8 transition-colors ${previewUrl ? 'border-indigo-300 bg-indigo-50/50' : 'border-slate-300 hover:border-indigo-400 hover:bg-slate-50'}`}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
+          onClick={() => !previewUrl && fileInputRef.current?.click()}
+        >
+          {previewUrl ? (
+            <div className="relative w-full h-full min-h-[250px] flex items-center justify-center group">
+              <img src={previewUrl} alt="Preview" className="max-h-[300px] object-contain rounded-lg shadow-sm" />
+              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity rounded-lg flex items-center justify-center">
+                <button onClick={(e) => { e.stopPropagation(); setFile(null); setPreviewUrl(null); }} className="bg-white text-slate-800 px-4 py-2 rounded-full font-medium text-sm hover:bg-slate-100 shadow-md">
+                  Ganti Gambar
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center cursor-pointer">
+              <div className="bg-indigo-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Upload className="text-indigo-600" size={28} />
+              </div>
+              <p className="text-slate-700 font-medium mb-1">Klik atau seret gambar ke sini</p>
+              <p className="text-slate-500 text-sm">Mendukung JPG, PNG, WEBP</p>
+            </div>
+          )}
+          <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" />
+        </div>
+
+        <button
+          onClick={handleExtract}
+          disabled={!file || loading}
+          className={`mt-6 w-full py-3 px-4 rounded-xl font-bold text-white shadow-md flex items-center justify-center gap-2 transition-all ${!file || loading ? 'bg-indigo-300 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 hover:shadow-lg active:scale-[0.98]'}`}
+        >
+          {loading ? <><Loader2 size={20} className="animate-spin" /> Memproses...</> : <><ChevronRight size={20} /> Ekstrak Sekarang</>}
+        </button>
+      </div>
+
+      {/* Result Area */}
+      <div className="w-full md:w-1/2 flex flex-col bg-slate-50 rounded-xl border border-slate-200 overflow-hidden">
+        <div className="p-4 bg-slate-100 border-b border-slate-200 flex justify-between items-center">
+          <h3 className="font-semibold text-slate-700 flex items-center gap-2">
+            {mode === 'text' ? <FileText size={18}/> : <Table size={18}/>} Hasil Ekstraksi
+          </h3>
+          {((mode === 'text' && resultText) || (mode === 'table' && resultTable)) && (
+            <div className="flex gap-2">
+              <button onClick={copyToClipboard} title="Salin ke Clipboard" className="p-2 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition">
+                {copied ? <Check size={18} className="text-green-600" /> : <Copy size={18} />}
+              </button>
+              {mode === 'text' ? (
+                <button onClick={() => downloadTxt(resultText)} title="Unduh File .TXT" className="p-2 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition">
+                  <Download size={18} />
+                </button>
+              ) : (
+                <button onClick={downloadCsv} title="Unduh CSV" className="p-2 text-slate-600 hover:text-green-600 hover:bg-green-50 rounded-lg transition flex items-center gap-1 text-sm font-medium">
+                  <Download size={18} /> CSV
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 flex-1 overflow-auto min-h-[300px]">
+          {!resultText && !resultTable && !loading && (
+            <div className="h-full flex flex-col items-center justify-center text-slate-400">
+              <ImageIcon size={48} className="mb-3 opacity-20" />
+              <p className="text-sm">Hasil ekstraksi akan muncul di sini</p>
+            </div>
+          )}
+          {loading && (
+            <div className="h-full flex flex-col items-center justify-center text-indigo-500">
+              <Loader2 size={40} className="animate-spin mb-4" />
+              <p className="text-sm font-medium animate-pulse">AI sedang memproses...</p>
+            </div>
+          )}
+          {mode === 'text' && resultText && !loading && (
+            <textarea className="w-full h-full min-h-[300px] p-0 bg-transparent border-none resize-none focus:ring-0 text-slate-700 leading-relaxed" value={resultText} readOnly />
+          )}
+          {mode === 'table' && resultTable && !loading && (
+            <div className="overflow-x-auto w-full max-w-full">
+              <table className="w-full text-sm text-left text-slate-600 border-collapse">
+                <thead className="text-xs text-slate-700 uppercase bg-indigo-50/50 border-b border-indigo-100">
+                  <tr>{resultTable[0]?.map((h, i) => <th key={i} className="px-4 py-3 border-r border-indigo-50 last:border-0 whitespace-nowrap">{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {resultTable.slice(1).map((row, r) => (
+                    <tr key={r} className="border-b border-slate-100 hover:bg-slate-50/50">
+                      {row.map((cell, c) => <td key={c} className="px-4 py-3 border-r border-slate-50 last:border-0">{cell}</td>)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderSheetGeneratorUI = () => (
+    <div className="flex flex-col md:flex-row gap-8 animate-in fade-in zoom-in duration-500">
+      {/* Form Area */}
+      <div className="w-full md:w-[45%] flex flex-col gap-5 bg-white p-2">
+        <div className="flex p-1 bg-slate-100 rounded-lg">
+          <button 
+            onClick={() => setSheetConfig({...sheetConfig, mode: 'template'})}
+            className={`flex-1 py-2 text-sm font-semibold rounded-md transition ${sheetConfig.mode === 'template' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            Template Bawaan
+          </button>
+          <button 
+            onClick={() => setSheetConfig({...sheetConfig, mode: 'custom'})}
+            className={`flex-1 py-2 text-sm font-semibold rounded-md transition flex items-center justify-center gap-1 ${sheetConfig.mode === 'custom' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            <Sparkles size={16}/> Data & Instruksi AI
+          </button>
+        </div>
+
+        {sheetConfig.mode === 'template' ? (
+          <>
+            <div>
+              <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
+                <LayoutTemplate size={16} className="text-indigo-600"/> Jenis Inventaris / Template
+              </label>
+              <select 
+                value={sheetConfig.template}
+                onChange={(e) => setSheetConfig({...sheetConfig, template: e.target.value})}
+                className="w-full p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none text-slate-700"
+              >
+                <option value="Inventaris Barang Masuk & Keluar">Inventaris Barang Masuk & Keluar</option>
+                <option value="Laporan Penjualan Bulanan">Laporan Penjualan Bulanan</option>
+                <option value="Database Karyawan & Gaji">Database Karyawan & Gaji</option>
+                <option value="Manajemen Proyek & Tugas">Manajemen Proyek & Tugas</option>
+                <option value="Catatan Keuangan Pribadi">Catatan Keuangan Pribadi</option>
+              </select>
+            </div>
+            <div>
+              <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
+                <Settings2 size={16} className="text-indigo-600"/> Rumus Otomatis
+              </label>
+              <div className="flex flex-col gap-2 bg-slate-50 p-3 border border-slate-200 rounded-lg">
+                <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+                  <input type="checkbox" checked={sheetConfig.formulas.sum} onChange={(e) => setSheetConfig({...sheetConfig, formulas: {...sheetConfig.formulas, sum: e.target.checked}})} className="rounded text-indigo-600" /> Total Penjumlahan (SUM)
+                </label>
+                <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+                  <input type="checkbox" checked={sheetConfig.formulas.average} onChange={(e) => setSheetConfig({...sheetConfig, formulas: {...sheetConfig.formulas, average: e.target.checked}})} className="rounded text-indigo-600" /> Rata-Rata (AVERAGE)
+                </label>
+                <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+                  <input type="checkbox" checked={sheetConfig.formulas.minmax} onChange={(e) => setSheetConfig({...sheetConfig, formulas: {...sheetConfig.formulas, minmax: e.target.checked}})} className="rounded text-indigo-600" /> Nilai Tertinggi/Terendah (MAX/MIN)
+                </label>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="flex flex-col gap-4 animate-in fade-in zoom-in duration-300">
+            <div>
+              <label className="flex items-center justify-between text-sm font-bold text-slate-700 mb-2">
+                <span className="flex items-center gap-2"><Table size={16} className="text-indigo-600"/> Data Mentah Barang</span>
+                <button onClick={() => dataInputRef.current?.click()} className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded flex items-center gap-1 hover:bg-indigo-200">
+                  <FileUp size={12}/> Upload .CSV/.TXT
+                </button>
+                <input type="file" ref={dataInputRef} accept=".csv,.txt" onChange={handleDataFileUpload} className="hidden" />
+              </label>
+              <textarea 
+                placeholder="Paste data barang di sini (contoh: Kopi 5pcs, Teh 10pcs)..."
+                value={sheetConfig.customData}
+                onChange={(e) => setSheetConfig({...sheetConfig, customData: e.target.value})}
+                className="w-full h-28 p-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none text-slate-700 text-sm"
+              />
+            </div>
+            <div>
+              <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
+                <Sparkles size={16} className="text-indigo-600"/> Instruksi Kustom AI
+              </label>
+              <textarea 
+                placeholder="Misal: 'Buatkan pivot tabel rekap per barang, lalu warnai baris merah jika jumlah di bawah 5'"
+                value={sheetConfig.customInstruction}
+                onChange={(e) => setSheetConfig({...sheetConfig, customInstruction: e.target.value})}
+                className="w-full h-20 p-3 bg-indigo-50 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none text-indigo-900 text-sm placeholder-indigo-300"
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-4 mt-2 border-t pt-4">
+          <div>
+            <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
+              <Palette size={16} className="text-indigo-600"/> Warna Header
+            </label>
+            <div className="flex items-center gap-3">
+              <input 
+                type="color" 
+                value={sheetConfig.headerColor} 
+                onChange={(e) => setSheetConfig({...sheetConfig, headerColor: e.target.value})}
+                className="w-10 h-10 rounded cursor-pointer border-0 p-0"
+              />
+              <span className="text-xs text-slate-500 uppercase">{sheetConfig.headerColor}</span>
+            </div>
+          </div>
+          <div>
+            <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
+              <Type size={16} className="text-indigo-600"/> Gaya Huruf
+            </label>
+            <select 
+              value={sheetConfig.fontStyle}
+              onChange={(e) => setSheetConfig({...sheetConfig, fontStyle: e.target.value})}
+              className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+            >
+              <option value="sans-serif">Arial / Sans-Serif</option>
+              <option value="serif">Times New Roman / Serif</option>
+              <option value="monospace">Courier / Monospace</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">Garis Tepi</label>
+            <select 
+              value={sheetConfig.hasBorders ? 'yes' : 'no'}
+              onChange={(e) => setSheetConfig({...sheetConfig, hasBorders: e.target.value === 'yes'})}
+              className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+            >
+              <option value="yes">Gunakan Garis</option>
+              <option value="no">Tanpa Garis</option>
+            </select>
+          </div>
+          <div>
+            <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">Format Sheet</label>
+            <select 
+              value={sheetConfig.pageLayout}
+              onChange={(e) => setSheetConfig({...sheetConfig, pageLayout: e.target.value})}
+              className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+            >
+              <option value="single">Gabung (1 Sheet)</option>
+              <option value="multi">Pisah per Kategori</option>
+            </select>
+          </div>
+        </div>
+
+        <button
+          onClick={handleGenerateSheet}
+          disabled={loading || (sheetConfig.mode === 'custom' && !sheetConfig.customData && !sheetConfig.customInstruction)}
+          className={`mt-4 w-full py-3 px-4 rounded-xl font-bold text-white shadow-md flex items-center justify-center gap-2 transition-all ${loading || (sheetConfig.mode === 'custom' && !sheetConfig.customData && !sheetConfig.customInstruction) ? 'bg-green-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 hover:shadow-lg active:scale-[0.98]'}`}
+        >
+          {loading ? <><Loader2 size={20} className="animate-spin" /> Menyusun Sheet...</> : <><FileSpreadsheet size={20} /> Buat Spreadsheet Otomatis</>}
+        </button>
+      </div>
+
+      {/* Result Preview Area */}
+      <div className="w-full md:w-[55%] flex flex-col bg-slate-50 rounded-xl border border-slate-200 overflow-hidden">
+        <div className="p-4 bg-slate-100 border-b border-slate-200 flex justify-between items-center">
+          <h3 className="font-semibold text-slate-700 flex items-center gap-2">
+            <FileSpreadsheet size={18}/> Preview Spreadsheet
+          </h3>
+          {resultSheet && (
+            <button onClick={downloadStyledExcel} className="py-2 px-4 bg-green-600 text-white hover:bg-green-700 rounded-lg transition flex items-center gap-2 text-sm font-medium shadow-sm">
+              <Download size={16} /> Ekspor Excel (.xls)
+            </button>
+          )}
+        </div>
+
+        <div className="p-4 flex-1 overflow-auto max-h-[500px]">
+          {!resultSheet && !loading && (
+            <div className="h-full flex flex-col items-center justify-center text-slate-400 mt-10">
+              <LayoutTemplate size={48} className="mb-3 opacity-20" />
+              <p className="text-sm">Konfigurasi opsi di sebelah kiri, lalu klik Buat.</p>
+            </div>
+          )}
+
+          {loading && (
+            <div className="h-full flex flex-col items-center justify-center text-green-500 mt-10">
+              <Loader2 size={40} className="animate-spin mb-4" />
+              <p className="text-sm font-medium animate-pulse">Menghitung data & merancang layout...</p>
+            </div>
+          )}
+
+          {resultSheet && !loading && (
+            <div className="flex flex-col gap-8" style={{ fontFamily: sheetConfig.fontStyle }}>
+              {resultSheet.sheets.map((sheet, idx) => (
+                <div key={idx} className="w-full overflow-x-auto">
+                  <div className="inline-block min-w-full">
+                    <div className="mb-2 font-bold text-sm text-slate-500 bg-white px-3 py-1 inline-block rounded-t-lg border border-b-0 border-slate-200 shadow-sm">
+                      📄 Sheet: {sheet.name}
+                    </div>
+                    <table className={`w-full text-sm text-left border-collapse ${sheetConfig.hasBorders ? 'border border-slate-300' : ''} bg-white shadow-sm rounded-b-lg rounded-tr-lg overflow-hidden`}>
+                      <thead style={{ backgroundColor: sheetConfig.headerColor, color: '#ffffff' }}>
+                        <tr>
+                          {sheet.data[0]?.map((h, i) => (
+                            <th key={i} className={`px-4 py-2 whitespace-nowrap ${sheetConfig.hasBorders ? 'border border-slate-300' : ''}`}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sheet.data.slice(1).map((row, r) => (
+                          <tr key={r} className="hover:bg-slate-50">
+                            {row.map((cell, c) => {
+                              let cellValue = cell;
+                              let customBg = '';
+
+                              if (cell !== null && typeof cell === 'object' && cell.v !== undefined) {
+                                cellValue = cell.v;
+                                if (cell.bg) customBg = cell.bg;
+                              }
+
+                              const isFormula = typeof cellValue === 'string' && cellValue.startsWith('=');
+                              
+                              return (
+                                <td 
+                                  key={c} 
+                                  style={{ backgroundColor: customBg || 'transparent' }}
+                                  className={`px-4 py-2 ${sheetConfig.hasBorders ? 'border border-slate-200' : ''} ${isFormula ? 'font-mono text-green-700 bg-green-50/30' : 'text-slate-700'}`}
+                                >
+                                  {cellValue}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+              <div className="text-xs text-slate-500 italic mt-4">
+                *Teks berawalan "=" akan otomatis dikenali sebagai rumus, dan format warna (jika direquest) akan ikut tersimpan saat diekspor ke file Excel.
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-800 relative scroll-smooth">
+      {/* Header & Hero */}
+      <header className="bg-gradient-to-br from-indigo-700 to-blue-600 text-white pt-20 pb-20 px-4 sm:px-6 lg:px-8 shadow-inner">
+        <div className="max-w-4xl mx-auto text-center">
+          <div className="inline-block bg-white/20 px-4 py-1.5 rounded-full text-sm font-semibold tracking-wider mb-6 backdrop-blur-sm border border-white/30">
+            EkstrakAja
+          </div>
+          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight mb-6 leading-tight">
+            Ubah Gambar & Teks Mentah<br/>Menjadi Data Terstruktur
+          </h1>
+        </div>
+      </header>
+
+      {/* Main Landing / Introduction Section */}
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 -mt-12 pb-20 relative z-10">
+        
+        {/* PENGANTAR (CASUAL INTRODUCTION) */}
+        {!showTool && (
+          <div className="bg-white rounded-2xl shadow-xl p-8 md:p-12 text-center animate-in fade-in slide-in-from-bottom-4 duration-700 border border-slate-100">
+            <h2 className="text-2xl md:text-3xl font-bold text-slate-800 mb-6">
+              Halo! Kenalin, ini EkstrakAja. 👋
+            </h2>
+            <div className="text-slate-600 text-base md:text-lg max-w-3xl mx-auto leading-relaxed space-y-4">
+              <p>
+                Sering dapet foto tabel buram terus pusing karena harus nyalin manual ke Excel? Atau mungkin punya catatan teks kepanjangan yang pengen dirapihin jadi format digital? 
+              </p>
+              <p>
+                Tenang aja... Web ini emang sengaja dibikin buat ngeberesin masalah-masalah <i>nyebelin</i> kayak gitu! Tinggal <i>upload</i> gambarnya, kasih tau AI-nya mau diapain, dan... kelar deh! Kerjaan beres, kamu bisa lanjut rebahan. ☕
+              </p>
+            </div>
+
+            {/* PRIVACY BANNER */}
+            <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 my-8 mx-auto max-w-2xl flex flex-col md:flex-row items-center md:items-start gap-4 shadow-sm text-left">
+              <div className="bg-orange-100 text-orange-500 p-3 rounded-full shrink-0">
+                <ShieldCheck size={28} />
+              </div>
+              <div>
+                <h4 className="font-bold text-orange-800">Privasi Super Aman! 🔒</h4>
+                <p className="text-sm text-orange-700 leading-relaxed mt-1">
+                  Data kamu 100% aman dan <strong>nggak kami simpan</strong> sama sekali ke database. Boro-boro mau nyimpen data pengguna, <i>developer</i> kami aja kerjaannya cuma scroll fesbuk doang seharian. 🤣
+                </p>
+              </div>
+            </div>
+
+            <button 
+              onClick={scrollToTool}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-4 px-8 rounded-full shadow-lg hover:shadow-xl transition-all transform hover:-translate-y-1 flex items-center gap-2 mx-auto text-lg"
+            >
+              Mulai Gunakan Alatnya <ChevronRight />
+            </button>
+          </div>
+        )}
+
+        {/* TOOL SECTION (Hidden until "Mulai" is clicked) */}
+        {showTool && (
+          <div ref={toolSectionRef} className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100 animate-in fade-in slide-in-from-bottom-8 duration-700">
+            {/* Tabs */}
+            <div className="flex flex-col sm:flex-row border-b border-slate-200">
+              <button
+                onClick={() => { setMode('text'); setError(''); }}
+                className={`flex-1 py-4 px-4 text-center font-semibold text-sm transition flex items-center justify-center gap-2 ${mode === 'text' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'}`}
+              >
+                <FileText size={18} /> Ekstrak Teks Biasa
+              </button>
+              <button
+                onClick={() => { setMode('table'); setError(''); }}
+                className={`flex-1 py-4 px-4 text-center font-semibold text-sm transition flex items-center justify-center gap-2 ${mode === 'table' ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'}`}
+              >
+                <Table size={18} /> Ekstrak Tabel Gambar
+              </button>
+              <button
+                onClick={() => { setMode('sheet'); setError(''); }}
+                className={`flex-1 py-4 px-4 text-center font-semibold text-sm transition flex items-center justify-center gap-2 ${mode === 'sheet' ? 'bg-green-50 text-green-700 border-b-2 border-green-600' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'}`}
+              >
+                <FileSpreadsheet size={18} /> Pembuat Sheet Pintar
+              </button>
+            </div>
+
+            <div className="p-6 md:p-8">
+              {error && (
+                <div className="mb-6 p-4 bg-red-50 text-red-700 rounded-lg flex items-start gap-3 text-sm border border-red-100">
+                  <AlertCircle size={18} className="shrink-0 mt-0.5" />
+                  <p>{error}</p>
+                </div>
+              )}
+              {mode === 'sheet' ? renderSheetGeneratorUI() : renderExtractUI()}
+            </div>
+          </div>
+        )}
+
+        {/* BOTTOM DONATION SECTION (Always visible below) */}
+        <div className="mt-16 bg-white rounded-2xl shadow-md border border-slate-100 p-8 flex flex-col md:flex-row items-center gap-8 max-w-4xl mx-auto">
+          <div className="flex-1 text-center md:text-left">
+            <div className="inline-flex items-center gap-2 bg-rose-50 text-rose-600 px-3 py-1 rounded-full text-sm font-semibold mb-4 border border-rose-100">
+              <Heart size={16} /> Dukung Kami
+            </div>
+            <h3 className="text-2xl font-bold text-slate-800 mb-3">Terbantu Sama Web Ini?</h3>
+            <p className="text-slate-600 leading-relaxed mb-6">
+              Kalo alat ini ngebantu banget dan ngurangin beban hidupmu, boleh dong traktir developer-nya kopi atau nasi padang (pake rendang & kuah banyakan). Biar makin semangat <i>update</i> fitur barunya! 😋
+            </p>
+            
+            <div className="flex items-center justify-center md:justify-start gap-2 text-indigo-600 font-medium bg-indigo-50 px-4 py-3 rounded-lg w-fit mx-auto md:mx-0">
+              <Instagram size={20} />
+              <a href="https://instagram.com/epidoey" target="_blank" rel="noreferrer" className="hover:underline">
+                @epidoey
+              </a>
+              <span className="text-sm text-slate-500 font-normal ml-1">
+                (masih pemula jadi <i>vibecoding</i> mulu)
+              </span>
+            </div>
+          </div>
+          
+          <div className="shrink-0">
+            {/* Statis QRIS dengan Aspek Rasio (1135:1600) */}
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm relative group overflow-hidden w-[220px] aspect-[1135/1600]">
+              <img 
+                src="https://i.ibb.co.com/JjfVVDsG/Whats-App-Interactive-2026-02-17-at-16-52-19.jpg" 
+                alt="QRIS Donasi" 
+                className="w-full h-full object-contain"
+              />
+              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                <button 
+                  onClick={handleDownloadQRIS}
+                  className="bg-white text-slate-800 font-bold px-4 py-2 text-sm rounded-lg shadow-lg hover:scale-105 transition flex items-center gap-2"
+                >
+                  <Download size={16} /> Download
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </main>
+
+      {/* Footer */}
+      <footer className="border-t border-slate-200 bg-white py-8 text-center text-slate-500 text-sm mt-8">
+        <p>&copy; {new Date().getFullYear()} <strong>EkstrakAja</strong>. Alat Pintar untuk Data Anda.</p>
+      </footer>
+
+      {/* POPUP DONASI (Ukuran Statis Diperbaiki) */}
+      {showDonation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 animate-in fade-in duration-300">
+          <div className="bg-white rounded-2xl shadow-2xl overflow-hidden relative scale-in-center flex flex-col w-full max-w-sm">
+            <button 
+              onClick={(e) => { e.stopPropagation(); setShowDonation(false); }}
+              className="absolute top-3 right-3 bg-black/40 text-white rounded-full p-1.5 hover:bg-black/60 transition z-10 backdrop-blur-sm"
+            >
+              <X size={20} />
+            </button>
+            
+            {/* Mempertahankan rasio 1135:1600 (portrait) */}
+            <div className="bg-slate-100 w-full aspect-[1135/1600] flex justify-center items-center">
+              <img 
+                src="https://i.ibb.co.com/JjfVVDsG/Whats-App-Interactive-2026-02-17-at-16-52-19.jpg" 
+                alt="Donasi Nasi Padang QRIS" 
+                className="w-full h-full object-contain"
+              />
+            </div>
+            
+            <div className="p-5 text-center bg-white shrink-0">
+              <h3 className="font-extrabold text-lg text-slate-800 mb-1">Traktir Kami Dong! 🥺</h3>
+              <p className="text-slate-600 text-xs mb-4 leading-relaxed">
+                Halo orang baik! Yuk kasih donasi ke developer buat beli nasi padang (lauk rendang nambah kuah), biar semangat bikin fitur barunya!
+              </p>
+              <button 
+                onClick={handleDownloadQRIS}
+                className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-2.5 px-4 rounded-xl shadow-md transition-colors flex items-center justify-center gap-2 text-sm"
+              >
+                <Download size={18} /> Download Poster QRIS
+              </button>
+              <button 
+                onClick={(e) => { e.stopPropagation(); setShowDonation(false); }}
+                className="mt-3 text-xs text-slate-400 hover:text-slate-600 font-medium"
+              >
+                Lain kali aja deh, lagi akhir bulan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
